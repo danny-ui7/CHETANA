@@ -35,7 +35,8 @@ CATEGORIES = [
     "Sunday Psalms",
     "Christmas",
     "Easter",
-    "Other Hymns"
+    "Other Hymns",
+    "Holy Mass"
 ]
 
 for folder in [HYMNS, PRESENTATIONS]:
