@@ -4,3 +4,5 @@ __pycache__/
 .env
 secrets.toml
 assets/
+.streamlit/secrets.toml
+__pycache__/
