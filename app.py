@@ -1,5 +1,8 @@
+
 import streamlit as st
 from pathlib import Path
+import hashlib
+import hmac
 
 # ==========================================
 # CHETANA - KANNADA CHURCH MEDIA LIBRARY
@@ -10,6 +13,91 @@ st.set_page_config(
     page_icon="🎵",
     layout="wide"
 )
+
+# ==========================================
+# OWNER AUTHENTICATION
+# ==========================================
+
+def verify_owner_password(password):
+    try:
+        salt = st.secrets["owner"]["salt"]
+        stored_hash = st.secrets["owner"]["password_hash"]
+
+        entered_hash = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            bytes.fromhex(salt),
+            310000
+        ).hex()
+
+        return hmac.compare_digest(
+            entered_hash,
+            stored_hash
+        )
+
+    except (KeyError, ValueError):
+        return False
+
+
+if "is_owner" not in st.session_state:
+    st.session_state.is_owner = False
+
+if "pending_delete" not in st.session_state:
+    st.session_state.pending_delete = None
+
+if "delete_notice" not in st.session_state:
+    st.session_state.delete_notice = None
+
+if "favorites" not in st.session_state:
+    st.session_state.favorites = set()
+
+if "selected_category" not in st.session_state:
+    st.session_state.selected_category = "All Categories"
+
+if "nav_page" not in st.session_state:
+    st.session_state.nav_page = "Home"
+
+
+# ==========================================
+# OWNER LOGIN / LOGOUT
+# ==========================================
+
+if st.session_state.is_owner:
+
+    st.sidebar.success("👑 Owner logged in")
+
+    if st.sidebar.button("Logout"):
+        st.session_state.is_owner = False
+        st.session_state.pending_delete = None
+        st.session_state.nav_page = "Home"
+        st.rerun()
+
+else:
+
+    st.sidebar.info("👤 Visitor mode")
+
+    with st.sidebar.expander("🔐 Owner Login"):
+
+        password = st.text_input(
+            "Enter Owner Password",
+            type="password",
+            key="owner_password"
+        )
+
+        if st.button("Login", key="owner_login"):
+
+            if verify_owner_password(password):
+                st.session_state.is_owner = True
+                st.session_state.owner_password = ""
+                st.rerun()
+
+            else:
+                st.error("Incorrect password.")
+
+
+# ==========================================
+# STORAGE PATHS
+# ==========================================
 
 BASE = Path(__file__).resolve().parent
 ASSETS = BASE / "assets"
@@ -46,14 +134,6 @@ for category in CATEGORIES:
     (HYMNS / category).mkdir(exist_ok=True)
     (PRESENTATIONS / category).mkdir(exist_ok=True)
 
-if "favorites" not in st.session_state:
-    st.session_state.favorites = set()
-
-if "pending_delete" not in st.session_state:
-    st.session_state.pending_delete = None
-
-if "delete_notice" not in st.session_state:
-    st.session_state.delete_notice = None
 
 # ==========================================
 # CUSTOM DESIGN
@@ -85,7 +165,9 @@ st.markdown(
 )
 
 st.markdown(
-    '<div class="subtitle">Kannada Catholic Hymns & Church Media Library</div>',
+    '<div class="subtitle">'
+    'Kannada Catholic Hymns & Church Media Library'
+    '</div>',
     unsafe_allow_html=True
 )
 
@@ -95,27 +177,49 @@ if st.session_state.delete_notice:
     st.success(st.session_state.delete_notice)
     st.session_state.delete_notice = None
 
+
 # ==========================================
 # NAVIGATION
 # ==========================================
 
+public_pages = [
+    "Home",
+    "Hymn Library",
+    "My Favourites",
+    "Presentations"
+]
+
+owner_pages = public_pages + ["Upload Media"]
+
+available_pages = (
+    owner_pages
+    if st.session_state.is_owner
+    else public_pages
+)
+
+# If owner logs out while on Upload Media,
+# automatically return to Home.
+if st.session_state.nav_page not in available_pages:
+    st.session_state.nav_page = "Home"
+
 page = st.sidebar.radio(
     "NAVIGATION",
-    [
-        "Home",
-        "Hymn Library",
-        "My Favourites",
-        "Presentations",
-        "Upload Media"
-    ]
+    available_pages,
+    key="nav_page"
 )
 
 st.sidebar.divider()
 st.sidebar.caption("CHETANA Church Media Library")
 
+
 # ==========================================
 # HELPER FUNCTIONS
 # ==========================================
+
+def open_hymn_category(category):
+    st.session_state.selected_category = category
+    st.session_state.nav_page = "Hymn Library"
+
 
 def get_hymns():
     return sorted(
@@ -139,8 +243,15 @@ def get_presentations():
     )
 
 
+# ==========================================
+# DELETE MEDIA - OWNER ONLY
+# ==========================================
+
 def delete_media(file_path, media_type):
-    """Delete a selected file after checking its storage location."""
+
+    if not st.session_state.get("is_owner", False):
+        st.error("Only the owner can delete files.")
+        return
 
     file_path = Path(file_path).resolve()
 
@@ -153,41 +264,56 @@ def delete_media(file_path, media_type):
     try:
         file_path.relative_to(allowed_root)
     except ValueError:
-        st.error("This file is outside the CHETANA media folder.")
+        st.error("File is outside the permitted folder.")
         return
 
     if not file_path.is_file():
-        st.error("File not found. It may already have been deleted.")
+        st.error("File not found.")
         return
 
     file_path.unlink()
 
     if media_type == "hymn":
-        # Delete matching Kannada lyrics and chords too.
+
         related_files = [
             file_path.with_suffix(".txt"),
-            file_path.with_name(file_path.stem + ".chords.txt")
+            file_path.with_name(
+                file_path.stem + ".chords.txt"
+            )
         ]
 
         for related_file in related_files:
+
             if related_file.is_file():
+
                 try:
-                    related_file.resolve().relative_to(allowed_root)
+                    related_file.resolve().relative_to(
+                        allowed_root
+                    )
                     related_file.unlink()
+
                 except ValueError:
                     pass
 
         st.session_state.favorites.discard(file_path.name)
 
     st.session_state.pending_delete = None
+
     st.session_state.delete_notice = (
         f"Successfully deleted: {file_path.name}"
     )
+
     st.rerun()
 
 
+# ==========================================
+# DELETE BUTTON - OWNER ONLY
+# ==========================================
+
 def show_delete_button(file_path, media_type):
-    """Display delete and confirmation buttons."""
+
+    if not st.session_state.get("is_owner", False):
+        return
 
     file_id = str(file_path)
 
@@ -200,7 +326,7 @@ def show_delete_button(file_path, media_type):
 
         if media_type == "hymn":
             st.caption(
-                "Its matching lyrics and chords files will also be deleted."
+                "Matching lyrics and chords will also be deleted."
             )
 
         col1, col2 = st.columns(2)
@@ -224,6 +350,7 @@ def show_delete_button(file_path, media_type):
                 st.rerun()
 
     else:
+
         if st.button(
             "🗑️ Delete",
             key="delete_" + file_id
@@ -231,6 +358,10 @@ def show_delete_button(file_path, media_type):
             st.session_state.pending_delete = file_id
             st.rerun()
 
+
+# ==========================================
+# DISPLAY HYMNS
+# ==========================================
 
 def show_hymn(hymn):
 
@@ -246,15 +377,22 @@ def show_hymn(hymn):
     )
 
     lyrics = hymn.with_suffix(".txt")
-    chords = hymn.with_name(hymn.stem + ".chords.txt")
+
+    chords = hymn.with_name(
+        hymn.stem + ".chords.txt"
+    )
 
     if lyrics.exists():
         with st.expander("📖 View Kannada Lyrics"):
-            st.text(lyrics.read_text(encoding="utf-8"))
+            st.text(
+                lyrics.read_text(encoding="utf-8")
+            )
 
     if chords.exists():
         with st.expander("🎸 View Chords"):
-            st.text(chords.read_text(encoding="utf-8"))
+            st.text(
+                chords.read_text(encoding="utf-8")
+            )
 
     if st.button(
         "❤️ Remove from Favourites"
@@ -262,6 +400,7 @@ def show_hymn(hymn):
         else "♡ Add to Favourites",
         key="fav_" + str(hymn)
     ):
+
         if hymn.name in st.session_state.favorites:
             st.session_state.favorites.remove(hymn.name)
         else:
@@ -296,26 +435,34 @@ if page == "Home":
         st.metric("Presentations", len(get_presentations()))
 
     with col3:
-        st.metric("Favourites", len(st.session_state.favorites))
+        st.metric(
+            "Favourites",
+            len(st.session_state.favorites)
+        )
 
     st.divider()
 
     st.subheader("Explore Hymn Categories")
 
     for i in range(0, len(CATEGORIES), 2):
+
         cols = st.columns(2)
 
         for j, col in enumerate(cols):
+
             if i + j < len(CATEGORIES):
+
                 category = CATEGORIES[i + j]
 
                 with col:
-                    if st.button(
+
+                    st.button(
                         "🎵 " + category,
-                        use_container_width=True
-                    ):
-                        st.session_state.selected_category = category
-                        st.rerun()
+                        use_container_width=True,
+                        key="home_category_" + str(i + j),
+                        on_click=open_hymn_category,
+                        args=(category,)
+                    )
 
 
 # ==========================================
@@ -330,8 +477,10 @@ elif page == "Hymn Library":
         "Choose Category",
         ["All Categories"] + CATEGORIES,
         index=(
-            CATEGORIES.index(st.session_state.selected_category) + 1
-            if st.session_state.get("selected_category") in CATEGORIES
+            CATEGORIES.index(
+                st.session_state.selected_category
+            ) + 1
+            if st.session_state.selected_category in CATEGORIES
             else 0
         )
     )
@@ -372,7 +521,9 @@ elif page == "My Favourites":
     ]
 
     if not favourites:
-        st.info("You have not added any favourite hymns yet.")
+        st.info(
+            "You have not added any favourite hymns yet."
+        )
 
     for hymn in favourites:
         show_hymn(hymn)
@@ -401,7 +552,9 @@ elif page == "Presentations":
         if search.lower() not in presentation.stem.lower():
             continue
 
-        st.markdown(f"**📄 {presentation.name}**")
+        st.markdown(
+            f"**📄 {presentation.name}**"
+        )
 
         st.download_button(
             "Download Presentation",
@@ -416,16 +569,23 @@ elif page == "Presentations":
             key="ppt_" + str(presentation)
         )
 
-        show_delete_button(presentation, "presentation")
+        show_delete_button(
+            presentation,
+            "presentation"
+        )
 
         st.divider()
 
 
 # ==========================================
-# UPLOAD MEDIA
+# UPLOAD MEDIA - OWNER ONLY
 # ==========================================
 
 elif page == "Upload Media":
+
+    if not st.session_state.get("is_owner", False):
+        st.error("Access denied. Owner login required.")
+        st.stop()
 
     st.header("📤 Upload Church Media")
 
@@ -471,21 +631,33 @@ elif page == "Upload Media":
         original_name = Path(uploaded.name).name
 
         if media_type == "Hymn Chords":
+
             file_name = (
-                Path(original_name).stem.replace(".chords", "")
+                Path(original_name).stem.replace(
+                    ".chords", ""
+                )
                 + ".chords.txt"
             )
+
         else:
             file_name = original_name
 
         destination = folder / file_name
 
-        if st.button("Upload Now", type="primary"):
+        if st.button(
+            "Upload Now",
+            type="primary"
+        ):
 
             if destination.exists():
+
                 st.warning("This file already exists.")
+
             else:
-                destination.write_bytes(uploaded.getbuffer())
+
+                destination.write_bytes(
+                    uploaded.getbuffer()
+                )
 
                 st.success(
                     f"Successfully uploaded: {file_name}"
